@@ -1163,12 +1163,36 @@ def render_tab2_auto_mask():
                 st.image(overlay_prev, caption="検出オーバーレイ", use_container_width=True)
                 st.image((l_prev.astype(np.uint8)) * 255, caption="葉のマスク（白黒）", use_container_width=True)
         else:
-            # 深度未計算時は原本画像とROI枠のみプレビュー
-            h, w = target_frame["orig_rgb"].shape[:2]
+            # 深度未計算時はHSVカラーフィルタ・ROI・モルフォロジーを即時プレビュー
+            orig_rgb = target_frame["orig_rgb"]
+            h, w = orig_rgb.shape[:2]
             y1, y2, x1, x2 = get_roi_bounds(h, w, roi_pct)
-            roi_vis = target_frame["orig_rgb"].copy()
-            cv2.rectangle(roi_vis, (x1, y1), (x2 - 1, y2 - 1), (255, 255, 255), 3)
-            st.image(roi_vis, caption="原本画像 + ROI枠（左の実行ボタンで深度推定・マスク生成を行います）", use_container_width=True)
+            hsv_roi_mask = create_hsv_mask(
+                orig_rgb[y1:y2, x1:x2],
+                st.session_state.h_min,
+                st.session_state.h_max,
+                s_min,
+                s_max,
+                v_min,
+                v_max,
+            ).astype(np.uint8) * 255
+            if morph_kernel >= 3:
+                kernel = np.ones((morph_kernel, morph_kernel), np.uint8)
+                hsv_roi_mask = cv2.morphologyEx(hsv_roi_mask, cv2.MORPH_OPEN, kernel)
+                hsv_roi_mask = cv2.morphologyEx(hsv_roi_mask, cv2.MORPH_CLOSE, kernel)
+
+            hsv_mask_full = np.zeros((h, w), dtype=bool)
+            hsv_mask_full[y1:y2, x1:x2] = hsv_roi_mask > 0
+            hsv_overlay = render_detected_overlay(orig_rgb, hsv_mask_full, roi_pct)
+            ext_px, tot_px, pct = compute_leaf_stats(hsv_mask_full, roi_pct)
+
+            st.info("深度推定は未実行のため、HSVカラーフィルタ＋ROIのリアルタイムプレビューを表示しています。左の実行ボタンで深度マスクと統合されます。")
+            st.metric("HSVプレビュー葉面積率 (ROI内・深度未適用)", f"{pct:.2f} %", f"{ext_px:,} / {tot_px:,} px")
+            p1, p2 = st.columns(2)
+            with p1:
+                st.image(hsv_overlay, caption="HSVフィルタ適用プレビュー（ROI枠）", use_container_width=True)
+            with p2:
+                st.image((hsv_mask_full.astype(np.uint8)) * 255, caption="HSVマスク（白黒）", use_container_width=True)
 
 
 # ------------------------------------------------------------
