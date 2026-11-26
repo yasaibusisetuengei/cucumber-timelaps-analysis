@@ -336,6 +336,38 @@ def compute_depth_map(img_rgb: np.ndarray) -> np.ndarray:
     return cv2.resize(norm, (w, h), interpolation=cv2.INTER_LANCZOS4)
 
 
+def _build_spectral_r_lut() -> np.ndarray:
+    stops = np.linspace(0, 255, 11)
+    colors = np.array(
+        [
+            [94, 79, 162],
+            [50, 136, 189],
+            [102, 194, 165],
+            [171, 221, 164],
+            [230, 245, 152],
+            [255, 255, 191],
+            [254, 224, 139],
+            [253, 174, 97],
+            [244, 109, 67],
+            [213, 62, 79],
+            [158, 1, 66],
+        ],
+        dtype=np.float32,
+    )
+    x = np.arange(256, dtype=np.float32)
+    lut = np.stack([np.interp(x, stops, colors[:, c]) for c in range(3)], axis=1)
+    return np.clip(np.round(lut), 0, 255).astype(np.uint8)
+
+
+SPECTRAL_R_LUT = _build_spectral_r_lut()
+
+
+def depth_to_spectral_rgb(depth_map: np.ndarray) -> np.ndarray:
+    """0-255の深度マップをSpectral_rカラーマップのRGB画像に変換する。"""
+    return SPECTRAL_R_LUT[np.clip(depth_map, 0, 255).astype(np.uint8)]
+
+
+
 # ------------------------------------------------------------
 # ユーティリティ関数
 # ------------------------------------------------------------
@@ -1126,7 +1158,7 @@ def render_tab2_auto_mask():
             p1, p2 = st.columns(2)
             with p1:
                 st.image(target_frame["orig_rgb"], caption="原本画像", use_container_width=True)
-                st.image((d_prev.astype(np.uint8)) * 255, caption="深度マスク（白黒）", use_container_width=True)
+                st.image(depth_to_spectral_rgb(target_frame["depth_map"]), caption="深度マスク（カラー）", use_container_width=True)
             with p2:
                 st.image(overlay_prev, caption="検出オーバーレイ", use_container_width=True)
                 st.image((l_prev.astype(np.uint8)) * 255, caption="葉のマスク（白黒）", use_container_width=True)
@@ -1391,8 +1423,8 @@ def render_tab3_manual_edit():
     with col_masks:
         st.markdown("**現在のマスク（白黒）**")
         st.image((item["leaf_mask"].astype(np.uint8)) * 255, caption="葉のマスク（補正後）", use_container_width=True)
-        if item["depth_mask"] is not None:
-            st.image((item["depth_mask"].astype(np.uint8)) * 255, caption="深度マスク", use_container_width=True)
+        if item["depth_map"] is not None:
+            st.image(depth_to_spectral_rgb(item["depth_map"]), caption="深度マスク（カラー）", use_container_width=True)
 
 
 # ------------------------------------------------------------
@@ -1420,7 +1452,7 @@ def render_tab4_export():
         for item in ready_frames:
             stem = item["stem"]
             orig_rgb = item["orig_rgb"]
-            depth_mask_u8 = (item["depth_mask"].astype(np.uint8)) * 255 if item["depth_mask"] is not None else np.zeros(orig_rgb.shape[:2], dtype=np.uint8)
+            depth_color_rgb = depth_to_spectral_rgb(item["depth_map"]) if item["depth_map"] is not None else np.zeros_like(orig_rgb)
             leaf_mask_u8 = (item["leaf_mask"].astype(np.uint8)) * 255
             detected_rgb = render_detected_overlay(orig_rgb, item["leaf_mask"], roi_pct)
 
@@ -1437,7 +1469,7 @@ def render_tab4_export():
             )
 
             zf.writestr(f"original_images/{stem}.png", encode_png(orig_rgb))
-            zf.writestr(f"depth_masks/{stem}_depth_mask.png", encode_png(depth_mask_u8))
+            zf.writestr(f"depth_masks/{stem}_depth_mask.png", encode_png(depth_color_rgb))
             zf.writestr(f"leaf_masks/{stem}_leaf_mask.png", encode_png(leaf_mask_u8))
             zf.writestr(f"detected_images/detected_{stem}.png", encode_png(detected_rgb))
 
@@ -1481,7 +1513,7 @@ def render_tab4_export():
     sel = ready_frames[view_idx]
     sel_stem = sel["stem"]
     sel_orig = sel["orig_rgb"]
-    sel_depth_u8 = (sel["depth_mask"].astype(np.uint8)) * 255 if sel["depth_mask"] is not None else np.zeros(sel_orig.shape[:2], dtype=np.uint8)
+    sel_depth_rgb = depth_to_spectral_rgb(sel["depth_map"]) if sel["depth_map"] is not None else np.zeros_like(sel_orig)
     sel_leaf_u8 = (sel["leaf_mask"].astype(np.uint8)) * 255
     sel_det = render_detected_overlay(sel_orig, sel["leaf_mask"], roi_pct)
 
@@ -1496,10 +1528,10 @@ def render_tab4_export():
             use_container_width=True,
         )
     with v2:
-        st.image(sel_depth_u8, caption="深度マスク", use_container_width=True)
+        st.image(sel_depth_rgb, caption="深度マスク（カラー）", use_container_width=True)
         st.download_button(
             "深度マスクを保存",
-            data=encode_png(sel_depth_u8),
+            data=encode_png(sel_depth_rgb),
             file_name=f"{sel_stem}_depth_mask.png",
             mime="image/png",
             use_container_width=True,
