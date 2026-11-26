@@ -1172,6 +1172,11 @@ def render_tab2_auto_mask():
             with p2:
                 st.image(overlay_prev, caption="検出オーバーレイ", use_container_width=True)
                 st.image((l_prev.astype(np.uint8)) * 255, caption="葉のマスク（白黒）", use_container_width=True)
+
+        if target_frame["leaf_mask"] is not None:
+            st.divider()
+            with st.expander("✏️ スーパーピクセル / ブラシでマスクを手動補正する", expanded=True):
+                render_manual_mask_editor(preview_idx, key_prefix="tab2")
         else:
             # 深度未計算時はHSVカラーフィルタ・ROI・モルフォロジーを即時プレビュー
             orig_rgb = target_frame["orig_rgb"]
@@ -1206,60 +1211,11 @@ def render_tab2_auto_mask():
 
 
 # ------------------------------------------------------------
-# タブ3: マスクの手動補正 (app.py 準拠のスーパーピクセル & ブラシ編集)
+# 共通: マスクの手動補正エディタ (app.py 準拠のスーパーピクセル & ブラシ編集)
 # ------------------------------------------------------------
-def render_tab3_manual_edit():
-    st.subheader("③ マスクの手動補正（スーパーピクセル ＆ ブラシ）")
+def render_manual_mask_editor(frame_idx: int, key_prefix: str):
     frames = st.session_state.frames
-    if not frames:
-        st.info("先にタブ①・②で画像を読み込み、自動マスクを生成してください。")
-        return
-
-    ready_indices = [i for i, f in enumerate(frames) if f["leaf_mask"] is not None]
-    if not ready_indices:
-        st.warning("まだ葉のマスクが生成されていません。タブ②で「全フレームで深度推定 ＆ マスク生成を実行」を押してください。")
-        return
-
-    if st.session_state.edit_idx not in ready_indices:
-        st.session_state.edit_idx = ready_indices[0]
-
-    # フレーム切り替えナビゲーション
-    nav_c1, nav_c2, nav_c3 = st.columns([1, 3, 1])
-    with nav_c1:
-        if st.button("◀ 前のフレーム", use_container_width=True):
-            pos = ready_indices.index(st.session_state.edit_idx)
-            st.session_state.edit_idx = ready_indices[(pos - 1) % len(ready_indices)]
-            st.session_state.last_click = None
-            st.session_state.sp_canvas_ver += 1
-            st.session_state.sp_draw_objs = []
-            st.rerun()
-    with nav_c2:
-        selected_idx = st.selectbox(
-            "編集対象フレーム",
-            ready_indices,
-            index=ready_indices.index(st.session_state.edit_idx),
-            format_func=lambda i: (
-                f"{i+1}/{len(frames)}: {frames[i]['name']}"
-                + (" [手動補正済み]" if frames[i]["edited"] else "")
-            ),
-            label_visibility="collapsed",
-        )
-        if selected_idx != st.session_state.edit_idx:
-            st.session_state.edit_idx = selected_idx
-            st.session_state.last_click = None
-            st.session_state.sp_canvas_ver += 1
-            st.session_state.sp_draw_objs = []
-            st.rerun()
-    with nav_c3:
-        if st.button("次のフレーム ▶", use_container_width=True):
-            pos = ready_indices.index(st.session_state.edit_idx)
-            st.session_state.edit_idx = ready_indices[(pos + 1) % len(ready_indices)]
-            st.session_state.last_click = None
-            st.session_state.sp_canvas_ver += 1
-            st.session_state.sp_draw_objs = []
-            st.rerun()
-
-    item = frames[st.session_state.edit_idx]
+    item = frames[frame_idx]
     orig_rgb = item["orig_rgb"]
     orig_h, orig_w = orig_rgb.shape[:2]
     roi_pct = (
@@ -1269,7 +1225,16 @@ def render_tab3_manual_edit():
         max(st.session_state.roi_left + 1, st.session_state.roi_right),
     )
 
-    # 作業解像度にリサイズ
+    ver_key = f"{key_prefix}_sp_canvas_ver"
+    objs_key = f"{key_prefix}_sp_draw_objs"
+    click_key = f"{key_prefix}_last_click"
+    if ver_key not in st.session_state:
+        st.session_state[ver_key] = 0
+    if objs_key not in st.session_state:
+        st.session_state[objs_key] = []
+    if click_key not in st.session_state:
+        st.session_state[click_key] = None
+
     work_rgb = downscale_for_work(orig_rgb, WORK_MAX_SIDE) if max(orig_h, orig_w) > WORK_MAX_SIDE else orig_rgb
     work_h, work_w = work_rgb.shape[:2]
     if (work_h, work_w) != (orig_h, orig_w):
@@ -1286,14 +1251,23 @@ def render_tab3_manual_edit():
 
     with col_ctrl:
         st.markdown("**編集設定**")
-        mask_color_name = st.selectbox("マスク表示色", list(MASK_DISPLAY_COLORS.keys()), key="mask_color_name")
+        mask_color_name = st.selectbox(
+            "マスク表示色",
+            list(MASK_DISPLAY_COLORS.keys()),
+            key=f"{key_prefix}_mask_color_name",
+        )
         selected_mask_color = MASK_DISPLAY_COLORS[mask_color_name]
 
         edit_method = st.selectbox(
             "修正方法",
             ["スーパーピクセルをクリック（反転）", "直接描いて修正（ブラシ）"],
+            key=f"{key_prefix}_edit_method",
         )
-        show_boundaries = st.checkbox("スーパーピクセル境界線を表示", key="sp_show_boundaries")
+        show_boundaries = st.checkbox(
+            "スーパーピクセル境界線を表示",
+            value=True,
+            key=f"{key_prefix}_sp_show_boundaries",
+        )
         st.divider()
 
         if edit_method == "スーパーピクセルをクリック（反転）":
@@ -1301,15 +1275,17 @@ def render_tab3_manual_edit():
                 "スーパーピクセルの粒度（分割数）",
                 min_value=50,
                 max_value=1500,
+                value=250,
                 step=10,
-                key="sp_n_segments",
+                key=f"{key_prefix}_sp_n_segments",
             )
             compactness = st.slider(
                 "コンパクトネス（形状の均一さ）",
                 min_value=1.0,
                 max_value=40.0,
+                value=10.0,
                 step=1.0,
-                key="sp_compactness",
+                key=f"{key_prefix}_sp_compactness",
             )
             brush_radius = st.slider(
                 "まとめてピクセルを選択",
@@ -1318,26 +1294,52 @@ def render_tab3_manual_edit():
                 value=0,
                 step=5,
                 help="0にするとクリックした1つのスーパーピクセルのみを反転します。",
+                key=f"{key_prefix}_brush_radius",
             )
         else:
-            n_segments = st.session_state.sp_n_segments
-            compactness = st.session_state.sp_compactness
-            brush_action = st.radio("ブラシ操作", ["追加", "消去"], horizontal=True)
-            brush_size = st.slider("ブラシの大きさ (px)", min_value=3, max_value=60, value=15, step=1)
-            snap_to_sp = st.checkbox("描いた部分をスーパーピクセル単位に合わせる", value=False)
-            if st.button("描画レイヤーをクリア", use_container_width=True):
-                st.session_state.sp_canvas_ver += 1
-                st.session_state.sp_draw_objs = []
+            n_segments = st.session_state.get(f"{key_prefix}_sp_n_segments", 250)
+            compactness = st.session_state.get(f"{key_prefix}_sp_compactness", 10.0)
+            brush_action = st.radio(
+                "ブラシ操作",
+                ["追加", "消去"],
+                horizontal=True,
+                key=f"{key_prefix}_brush_action",
+            )
+            brush_size = st.slider(
+                "ブラシの大きさ (px)",
+                min_value=3,
+                max_value=60,
+                value=15,
+                step=1,
+                key=f"{key_prefix}_brush_size",
+            )
+            snap_to_sp = st.checkbox(
+                "描いた部分をスーパーピクセル単位に合わせる",
+                value=False,
+                key=f"{key_prefix}_snap_to_sp",
+            )
+            if st.button("描画レイヤーをクリア", use_container_width=True, key=f"{key_prefix}_clear_btn"):
+                st.session_state[ver_key] += 1
+                st.session_state[objs_key] = []
                 st.rerun()
-            apply_brush_clicked = st.button("編集画面に適用", type="primary", use_container_width=True)
+            apply_brush_clicked = st.button(
+                "編集画面に適用",
+                type="primary",
+                use_container_width=True,
+                key=f"{key_prefix}_apply_brush_btn",
+            )
 
         st.divider()
-        if item["auto_leaf_mask"] is not None and st.button("自動生成マスクにリセット", use_container_width=True):
+        if item["auto_leaf_mask"] is not None and st.button(
+            "自動生成マスクにリセット",
+            use_container_width=True,
+            key=f"{key_prefix}_reset_auto_btn",
+        ):
             item["leaf_mask"] = item["auto_leaf_mask"].copy()
             item["edited"] = False
-            st.session_state.last_click = None
-            st.session_state.sp_canvas_ver += 1
-            st.session_state.sp_draw_objs = []
+            st.session_state[click_key] = None
+            st.session_state[ver_key] += 1
+            st.session_state[objs_key] = []
             st.rerun()
 
         ext_px, tot_px, pct = compute_leaf_stats(item["leaf_mask"], roi_pct)
@@ -1381,14 +1383,14 @@ def render_tab3_manual_edit():
                 drawing_mode="freedraw",
                 width=disp_w,
                 height=disp_h,
-                key=f"sp_draw_canvas_{st.session_state.edit_idx}_{st.session_state.sp_canvas_ver}",
+                key=f"{key_prefix}_sp_draw_canvas_{frame_idx}_{st.session_state[ver_key]}",
             )
 
             if sp_draw_res.json_data is not None and "objects" in sp_draw_res.json_data:
-                st.session_state.sp_draw_objs = sp_draw_res.json_data["objects"]
+                st.session_state[objs_key] = sp_draw_res.json_data["objects"]
 
             if apply_brush_clicked:
-                objs = st.session_state.get("sp_draw_objs", [])
+                objs = st.session_state.get(objs_key, [])
                 if len(objs) > 0:
                     changed = False
                     for obj in objs:
@@ -1419,23 +1421,23 @@ def render_tab3_manual_edit():
 
                     if changed:
                         save_work_mask_to_item(work_mask)
-                        st.session_state.sp_canvas_ver += 1
-                        st.session_state.sp_draw_objs = []
+                        st.session_state[ver_key] += 1
+                        st.session_state[objs_key] = []
                         st.rerun()
                     else:
                         st.warning("描画領域が取得できませんでした。もう一度描画してお試しください。")
                 else:
                     st.warning("編集画面にブラシで描画してから「編集画面に適用」を押してください。")
         else:
-            coord_kwargs = {"key": f"sp_canvas_{st.session_state.edit_idx}"}
+            coord_kwargs = {"key": f"{key_prefix}_sp_canvas_{frame_idx}"}
             if "use_column_width" in inspect.signature(streamlit_image_coordinates).parameters:
                 coord_kwargs["use_column_width"] = "always"
 
             coords = streamlit_image_coordinates(Image.fromarray(disp_img), **coord_kwargs)
             if coords is not None:
-                click_sig = (st.session_state.edit_idx, coords["x"], coords["y"], brush_radius, n_segments)
-                if st.session_state.last_click != click_sig:
-                    st.session_state.last_click = click_sig
+                click_sig = (frame_idx, coords["x"], coords["y"], brush_radius, n_segments)
+                if st.session_state[click_key] != click_sig:
+                    st.session_state[click_key] = click_sig
                     rendered_w = max(1, int(coords.get("width", disp_w)))
                     rendered_h = max(1, int(coords.get("height", disp_h)))
                     orig_x = int(np.clip(round(coords["x"] * work_w / rendered_w), 0, work_w - 1))
@@ -1459,6 +1461,62 @@ def render_tab3_manual_edit():
         st.image((item["leaf_mask"].astype(np.uint8)) * 255, caption="葉のマスク（補正後）", use_container_width=True)
         if item["depth_map"] is not None:
             st.image(depth_to_spectral_rgb(item["depth_map"]), caption="深度マスク（カラー）", use_container_width=True)
+
+
+# ------------------------------------------------------------
+# タブ3: マスクの手動補正 (app.py 準拠のスーパーピクセル & ブラシ編集)
+# ------------------------------------------------------------
+def render_tab3_manual_edit():
+    st.subheader("③ マスクの手動補正（スーパーピクセル ＆ ブラシ）")
+    frames = st.session_state.frames
+    if not frames:
+        st.info("先にタブ①・②で画像を読み込み、自動マスクを生成してください。")
+        return
+
+    ready_indices = [i for i, f in enumerate(frames) if f["leaf_mask"] is not None]
+    if not ready_indices:
+        st.warning("まだ葉のマスクが生成されていません。タブ②で「全フレームで深度推定 ＆ マスク生成を実行」を押してください。")
+        return
+
+    if st.session_state.edit_idx not in ready_indices:
+        st.session_state.edit_idx = ready_indices[0]
+
+    nav_c1, nav_c2, nav_c3 = st.columns([1, 3, 1])
+    with nav_c1:
+        if st.button("◀ 前のフレーム", use_container_width=True):
+            pos = ready_indices.index(st.session_state.edit_idx)
+            st.session_state.edit_idx = ready_indices[(pos - 1) % len(ready_indices)]
+            st.session_state.tab3_last_click = None
+            st.session_state.tab3_sp_canvas_ver = st.session_state.get("tab3_sp_canvas_ver", 0) + 1
+            st.session_state.tab3_sp_draw_objs = []
+            st.rerun()
+    with nav_c2:
+        selected_idx = st.selectbox(
+            "編集対象フレーム",
+            ready_indices,
+            index=ready_indices.index(st.session_state.edit_idx),
+            format_func=lambda i: (
+                f"{i+1}/{len(frames)}: {frames[i]['name']}"
+                + (" [手動補正済み]" if frames[i]["edited"] else "")
+            ),
+            label_visibility="collapsed",
+        )
+        if selected_idx != st.session_state.edit_idx:
+            st.session_state.edit_idx = selected_idx
+            st.session_state.tab3_last_click = None
+            st.session_state.tab3_sp_canvas_ver = st.session_state.get("tab3_sp_canvas_ver", 0) + 1
+            st.session_state.tab3_sp_draw_objs = []
+            st.rerun()
+    with nav_c3:
+        if st.button("次のフレーム ▶", use_container_width=True):
+            pos = ready_indices.index(st.session_state.edit_idx)
+            st.session_state.edit_idx = ready_indices[(pos + 1) % len(ready_indices)]
+            st.session_state.tab3_last_click = None
+            st.session_state.tab3_sp_canvas_ver = st.session_state.get("tab3_sp_canvas_ver", 0) + 1
+            st.session_state.tab3_sp_draw_objs = []
+            st.rerun()
+
+    render_manual_mask_editor(st.session_state.edit_idx, key_prefix="tab3")
 
 
 # ------------------------------------------------------------
