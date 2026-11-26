@@ -742,6 +742,7 @@ def init_state():
     defaults = {
         "frames": [],  # list of dicts: name, stem, timestamp, orig_rgb, depth_map, depth_mask, leaf_mask, auto_leaf_mask, edited
         "video_sig": None,
+        "source_stem": None,
         "first_frame_rgb": None,
         "video_total_frames": 0,
         "extract_logs": [],
@@ -813,6 +814,7 @@ def render_tab1_video_extract():
                     }
                 )
             st.session_state.frames = loaded_frames
+            st.session_state.source_stem = None
             st.session_state.edit_idx = 0
             st.session_state.sp_canvas_ver += 1
             st.session_state.sp_draw_objs = []
@@ -839,6 +841,7 @@ def render_tab1_video_extract():
         with st.spinner("動画の1フレーム目を読み込んでいます..."):
             first_rgb, total_frames = get_video_first_frame_rgb(video_bytes, ext)
         st.session_state.video_sig = sig
+        st.session_state.source_stem = sanitize_filename(uploaded_video.name, default_stem="cucumber_leaf_area_results")
         st.session_state.first_frame_rgb = first_rgb
         st.session_state.video_total_frames = total_frames
 
@@ -953,6 +956,7 @@ def render_tab1_video_extract():
                     }
                     for item in extracted
                 ]
+                st.session_state.source_stem = sanitize_filename(uploaded_video.name, default_stem="cucumber_leaf_area_results")
                 st.session_state.extract_logs = logs
                 st.session_state.edit_idx = 0
                 st.session_state.sp_canvas_ver += 1
@@ -1448,7 +1452,7 @@ def render_tab4_export():
         st.download_button(
             label=f"📦 原本画像・深度マスク・葉のマスク・結果画像・CSVを一括ZIPダウンロード ({len(ready_frames)}枚)",
             data=zip_buffer,
-            file_name="cucumber_leaf_area_results.zip",
+            file_name=f"{st.session_state.get('source_stem') or 'cucumber_leaf_area_results'}.zip",
             mime="application/zip",
             type="primary",
             use_container_width=True,
