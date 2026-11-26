@@ -775,6 +775,7 @@ def init_state():
         "frames": [],  # list of dicts: name, stem, timestamp, orig_rgb, depth_map, depth_mask, leaf_mask, auto_leaf_mask, edited
         "video_sig": None,
         "source_stem": None,
+        "plot_number": "",
         "first_frame_rgb": None,
         "video_total_frames": 0,
         "extract_logs": [],
@@ -811,11 +812,20 @@ def init_state():
 def render_tab1_video_extract():
     st.subheader("① タイムラプス動画の読み込み ＆ フレーム抽出・魚眼補正")
 
-    input_mode = st.radio(
-        "入力ソース",
-        ["タイムラプス動画 (.avi / .mp4 / .mov)", "抽出済み画像群を直接アップロード (.png / .jpg)"],
-        horizontal=True,
-    )
+    col_in1, col_in2 = st.columns([2, 1])
+    with col_in1:
+        input_mode = st.radio(
+            "入力ソース",
+            ["タイムラプス動画 (.avi / .mp4 / .mov)", "抽出済み画像群を直接アップロード (.png / .jpg)"],
+            horizontal=True,
+        )
+    with col_in2:
+        st.text_input(
+            "試験区番号",
+            key="plot_number",
+            placeholder="例: 1",
+            help="入力した試験区番号が最終出力のCSVや結果表に表示されます。",
+        )
 
     if input_mode == "抽出済み画像群を直接アップロード (.png / .jpg)":
         uploaded_imgs = st.file_uploader(
@@ -1469,6 +1479,10 @@ def render_tab4_export():
         max(st.session_state.roi_left + 1, st.session_state.roi_right),
     )
 
+    plot_number = str(st.session_state.get("plot_number", "")).strip()
+    if plot_number:
+        st.info(f"試験区番号: **{plot_number}**")
+
     rows = []
     zip_buffer = io.BytesIO()
 
@@ -1483,6 +1497,7 @@ def render_tab4_export():
             ext_px, tot_px, leaf_pct = compute_leaf_stats(item["leaf_mask"], roi_pct)
             rows.append(
                 {
+                    "試験区番号": sanitize_csv_cell(plot_number),
                     "filename": sanitize_csv_cell(item["name"]),
                     "timestamp": sanitize_csv_cell(item["timestamp"]),
                     "leaf_area_percentage (%)": leaf_pct,
